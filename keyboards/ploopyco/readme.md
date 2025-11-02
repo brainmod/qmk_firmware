@@ -33,13 +33,28 @@ The `DPI_CONFIG` macro will cycle through the values in the array, each time you
 
 ## Drag Scroll
 
-Drag Sroll is a custom keycode for the Ploopy devices that allow you to hold or tap a button and have the mouse movement translate into scrolling instead.
+Drag Scroll is a custom keycode for the Ploopy devices that allows you to hold or tap a button and have the mouse movement translate into scrolling instead.
 
-Nothing needs to be enabled to use this functionality.  Just add the `DRAG_SCROLL` to your keymap.
+Nothing needs to be enabled to use this functionality. Just add the `DRAG_SCROLL` keycode to your keymap.
+
+### Drag Scroll Modes
+
+By default, `DRAG_SCROLL` operates in **toggle mode**: press once to enable, press again to disable.
+
+You can configure alternative behaviors:
+
+* `#define PLOOPY_DRAGSCROLL_MOMENTARY` - **Momentary mode**: dragscroll is only active while the key is held down.
+* `#define PLOOPY_DRAGSCROLL_HYBRID` - **Hybrid mode**: combines toggle and momentary behaviors.
+  - **Tap** (quick press without scrolling) = toggle dragscroll on/off
+  - **Hold and scroll** = momentary dragscroll (disables on release)
+  - **Press while toggled on** = turn off
 
 ### Drag Scroll Configuration
 
-* `#define PLOOPY_DRAGSCROLL_MOMENTARY` - Makes the key into a momentary key, rather than a toggle.
-* `#define PLOOPY_DRAGSCROLL_DIVISOR_H 8.0` - Sets the horizontal movement divisor to use when drag scroll is enabled.
-* `#define PLOOPY_DRAGSCROLL_DIVISOR_V 8.0` - Sets the vertical movement divisor to use when drag scroll is enabled.
-* `#define PLOOPY_DRAGSCROLL_INVERT` - This reverses the direction that the scroll is performed.
+* `#define PLOOPY_DRAGSCROLL_DIVISOR_H 8.0` - Sets the horizontal movement divisor (lower = faster scrolling).
+* `#define PLOOPY_DRAGSCROLL_DIVISOR_V 8.0` - Sets the vertical movement divisor (lower = faster scrolling).
+* `#define PLOOPY_DRAGSCROLL_INVERT` - Reverses the vertical scroll direction.
+* `#define PLOOPY_DRAGSCROLL_STICKY_AXIS` - **Sticky axis scrolling**: automatically locks to horizontal OR vertical scrolling based on initial movement direction, preventing diagonal scrolling.
+  - `#define PLOOPY_STICKY_AXIS_HISTORY_SIZE 30` - Number of movement samples to track (default: 30).
+  - `#define PLOOPY_STICKY_AXIS_SAMPLE_FREQ 10` - Milliseconds between samples (default: 10ms).
+* `#define PLOOPY_DRAGSCROLL_DISABLE_ON_CLICK` - Automatically exits dragscroll mode when clicking mouse buttons (BTN1 or BTN2). Useful for "scroll then click" workflows.

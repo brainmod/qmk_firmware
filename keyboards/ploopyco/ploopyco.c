@@ -58,6 +58,16 @@
 #    define ENCODER_BUTTON_COL 0
 #endif
 
+// Sticky axis configuration
+#ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+#    ifndef PLOOPY_STICKY_AXIS_HISTORY_SIZE
+#        define PLOOPY_STICKY_AXIS_HISTORY_SIZE 30
+#    endif
+#    ifndef PLOOPY_STICKY_AXIS_SAMPLE_FREQ
+#        define PLOOPY_STICKY_AXIS_SAMPLE_FREQ 10
+#    endif
+#endif
+
 keyboard_config_t keyboard_config;
 uint16_t          dpi_array[] = PLOOPY_DPI_OPTIONS;
 #define DPI_OPTION_SIZE ARRAY_SIZE(dpi_array)
@@ -67,6 +77,24 @@ bool  is_scroll_clicked    = false;
 bool  is_drag_scroll       = false;
 float scroll_accumulated_h = 0;
 float scroll_accumulated_v = 0;
+
+#ifdef PLOOPY_DRAGSCROLL_HYBRID
+static bool     dragscroll_toggled = false;
+static bool     scroll_detected    = false;
+static uint16_t dragscroll_timer   = 0;
+#endif
+
+#ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+typedef struct {
+    int8_t   x_delta[PLOOPY_STICKY_AXIS_HISTORY_SIZE];
+    int8_t   y_delta[PLOOPY_STICKY_AXIS_HISTORY_SIZE];
+    uint16_t timestamp[PLOOPY_STICKY_AXIS_HISTORY_SIZE];
+    uint8_t  head;
+    uint8_t  tail;
+} axis_history_t;
+
+static axis_history_t axis_history = {0};
+#endif
 
 #ifdef ENCODER_ENABLE
 uint16_t lastScroll        = 0; // Previous confirmed wheel event
@@ -138,28 +166,115 @@ void cycle_dpi(void) {
     pointing_device_set_cpi(dpi_array[keyboard_config.dpi_config]);
 }
 
+#ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+static void axis_history_reset(void) {
+    axis_history.head = 0;
+    axis_history.tail = 0;
+    for (uint8_t i = 0; i < PLOOPY_STICKY_AXIS_HISTORY_SIZE; i++) {
+        axis_history.x_delta[i] = 0;
+        axis_history.y_delta[i] = 0;
+        axis_history.timestamp[i] = 0;
+    }
+}
+
+static void axis_history_push(int8_t x, int8_t y, uint16_t now) {
+    // Advance head if enough time has passed
+    if (timer_elapsed(axis_history.timestamp[axis_history.head]) > PLOOPY_STICKY_AXIS_SAMPLE_FREQ) {
+        axis_history.head = (axis_history.head + 1) % PLOOPY_STICKY_AXIS_HISTORY_SIZE;
+
+        // If head caught up to tail, advance tail
+        if (axis_history.head == axis_history.tail) {
+            axis_history.tail = (axis_history.tail + 1) % PLOOPY_STICKY_AXIS_HISTORY_SIZE;
+        }
+
+        axis_history.timestamp[axis_history.head] = now;
+        axis_history.x_delta[axis_history.head] = 0;
+        axis_history.y_delta[axis_history.head] = 0;
+    }
+
+    // Accumulate deltas for current sample
+    axis_history.x_delta[axis_history.head] += x;
+    axis_history.y_delta[axis_history.head] += y;
+}
+
+static bool should_scroll_horizontally(void) {
+    float velocity_x = 0.0f;
+    float velocity_y = 0.0f;
+    uint8_t sample_count = 0;
+
+    // Calculate average velocity over history
+    uint8_t prev_idx = axis_history.tail;
+    uint8_t curr_idx = (axis_history.tail + 1) % PLOOPY_STICKY_AXIS_HISTORY_SIZE;
+
+    while (curr_idx != (axis_history.head + 1) % PLOOPY_STICKY_AXIS_HISTORY_SIZE) {
+        uint16_t time_delta = timer_elapsed(axis_history.timestamp[curr_idx]) -
+                              timer_elapsed(axis_history.timestamp[prev_idx]);
+
+        if (time_delta > 0) {
+            velocity_x += (float)abs(axis_history.x_delta[curr_idx]) / (float)time_delta;
+            velocity_y += (float)abs(axis_history.y_delta[curr_idx]) / (float)time_delta;
+            sample_count++;
+        }
+
+        prev_idx = curr_idx;
+        curr_idx = (curr_idx + 1) % PLOOPY_STICKY_AXIS_HISTORY_SIZE;
+    }
+
+    if (sample_count == 0) {
+        return false;  // Default to vertical
+    }
+
+    velocity_x /= (float)sample_count;
+    velocity_y /= (float)sample_count;
+
+    return velocity_x > velocity_y;
+}
+#endif
+
 report_mouse_t pointing_device_task_kb(report_mouse_t mouse_report) {
     mouse_report = pointing_device_task_user(mouse_report);
     if (is_drag_scroll) {
         scroll_accumulated_h += (float)mouse_report.x / PLOOPY_DRAGSCROLL_DIVISOR_H;
         scroll_accumulated_v += (float)mouse_report.y / PLOOPY_DRAGSCROLL_DIVISOR_V;
 
-        // Assign integer parts of accumulated scroll values to the mouse report
-        mouse_report.h = (int8_t)scroll_accumulated_h;
-#ifdef PLOOPY_DRAGSCROLL_INVERT
-        mouse_report.v = -(int8_t)scroll_accumulated_v;
+#ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+        // Track movement history for sticky axis detection
+        axis_history_push(mouse_report.x, mouse_report.y, timer_read());
+
+        // Determine scroll direction based on velocity history
+        if (should_scroll_horizontally()) {
+            mouse_report.h = (int8_t)scroll_accumulated_h;
+            mouse_report.v = 0;
+        } else {
+#    ifdef PLOOPY_DRAGSCROLL_INVERT
+            mouse_report.v = -(int8_t)scroll_accumulated_v;
+#    else
+            mouse_report.v = (int8_t)scroll_accumulated_v;
+#    endif
+            mouse_report.h = 0;
+        }
 #else
+        // Standard dual-axis scrolling
+        mouse_report.h = (int8_t)scroll_accumulated_h;
+#    ifdef PLOOPY_DRAGSCROLL_INVERT
+        mouse_report.v = -(int8_t)scroll_accumulated_v;
+#    else
         mouse_report.v = (int8_t)scroll_accumulated_v;
+#    endif
 #endif
 
         // Update accumulated scroll values by subtracting the integer parts
         scroll_accumulated_h -= (int8_t)scroll_accumulated_h;
         scroll_accumulated_v -= (int8_t)scroll_accumulated_v;
 
-        // Clear the X and Y values of the mouse report
-        mouse_report.x = 0;
-        mouse_report.y = 0;
+#ifdef PLOOPY_DRAGSCROLL_HYBRID
+        // Track that scrolling occurred for tap-to-toggle detection
+        if (mouse_report.h != 0 || mouse_report.v != 0) {
+            scroll_detected = true;
+        }
+#endif
 
+        // Clear cursor movement during drag scroll
         mouse_report.x = 0;
         mouse_report.y = 0;
     }
@@ -189,14 +304,68 @@ bool process_record_kb(uint16_t keycode, keyrecord_t* record) {
     }
 
     if (keycode == DRAG_SCROLL) {
-#ifdef PLOOPY_DRAGSCROLL_MOMENTARY
+#ifdef PLOOPY_DRAGSCROLL_HYBRID
+        // Hybrid mode: tap to toggle, hold to momentary
+        if (record->event.pressed) {
+            // Key pressed - enable dragscroll
+            if (!is_drag_scroll) {
+                is_drag_scroll = true;
+                scroll_detected = false;
+                dragscroll_timer = timer_read();
+#    ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+                axis_history_reset();
+                axis_history.timestamp[0] = dragscroll_timer;
+#    endif
+            } else {
+                // Already enabled (via toggle) - turn it off
+                is_drag_scroll = false;
+                dragscroll_toggled = false;
+                return false;
+            }
+        } else {
+            // Key released - decide between toggle and momentary
+            if (!scroll_detected && timer_elapsed(dragscroll_timer) < TAPPING_TERM) {
+                // Short tap without scrolling = toggle on
+                dragscroll_toggled = true;
+                is_drag_scroll = true;
+            } else if (!dragscroll_toggled) {
+                // Released after scrolling or long hold = disable (was momentary)
+                is_drag_scroll = false;
+            }
+            // If toggled on, keep it on
+        }
+#elif defined(PLOOPY_DRAGSCROLL_MOMENTARY)
+        // Momentary mode: only active while held
         is_drag_scroll = record->event.pressed;
+#    ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+        if (is_drag_scroll) {
+            axis_history_reset();
+            axis_history.timestamp[0] = timer_read();
+        }
+#    endif
 #else
+        // Toggle mode: press to toggle on/off
         if (record->event.pressed) {
             toggle_drag_scroll();
+#    ifdef PLOOPY_DRAGSCROLL_STICKY_AXIS
+            if (is_drag_scroll) {
+                axis_history_reset();
+                axis_history.timestamp[0] = timer_read();
+            }
+#    endif
         }
 #endif
     }
+
+#ifdef PLOOPY_DRAGSCROLL_DISABLE_ON_CLICK
+    // Auto-disable dragscroll on mouse button clicks
+    if (is_drag_scroll && (keycode == MS_BTN1 || keycode == MS_BTN2) && record->event.pressed) {
+        is_drag_scroll = false;
+#    ifdef PLOOPY_DRAGSCROLL_HYBRID
+        dragscroll_toggled = false;
+#    endif
+    }
+#endif
 
     return true;
 }
